@@ -43,9 +43,11 @@ This repository provides the **Follower Arm (Robot)** integration for the **reBo
     pip install lerobot-robot-seeed-b601
     ```
 
-    Upon installation, two robot variants are registered:
+    Upon installation, four robot variants are registered:
     *   `seeed_b601_dm_follower`: B601 follower using Damiao motors - **Primary supported path**
     *   `seeed_b601_rs_follower`: B601 follower using RobStride motors - **Registered, still being refined**
+    *   `bi_seeed_b601_dm_follower`: bimanual wrapper around two Damiao follower arms
+    *   `bi_seeed_b601_rs_follower`: bimanual wrapper around two RobStride follower arms
 
     ```shell
     # Verify that the follower configs are visible to LeRobot
@@ -89,6 +91,22 @@ lerobot-teleoperate \
     --teleop.id=leader1 \
     --teleop.port=/dev/ttyACM5 \
     --teleop.can_adapter=damiao
+```
+
+### Bimanual follower with reBot Arm 102 leaders
+
+```shell
+lerobot-teleoperate \
+    --teleop.type=bi_rebot_arm_102_leader \
+    --teleop.id=rebot_arm_102_dual \
+    --teleop.left_arm_config.port=/dev/ttyUSB0 \
+    --teleop.right_arm_config.port=/dev/ttyUSB1 \
+    --robot.type=bi_seeed_b601_dm_follower \
+    --robot.id=b601_dual \
+    --robot.left_arm_config.port=/dev/ttyACM0 \
+    --robot.left_arm_config.can_adapter=damiao \
+    --robot.right_arm_config.port=/dev/ttyACM1 \
+    --robot.right_arm_config.can_adapter=damiao
 ```
 
 ### Teleoperate with follower cameras

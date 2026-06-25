@@ -302,9 +302,14 @@ class SeeedB601FollowerBase(Robot):
 
             goal_pos[motor_name] = position
 
-        # To tolerate 6-DOF leader arms that don't have a wrist_yaw joint, we can allow the follower to ignore missing wrist_yaw commands by treating them as 0.
-        if 'wrist_yaw' not in goal_pos:
+        # To tolerate 6-DOF leader arms that don't have a wrist_yaw joint,
+        # only auto-fill when this arm already has at least one target.
+        if goal_pos and 'wrist_yaw' not in goal_pos:
             goal_pos['wrist_yaw'] = 0.0
+
+        # Nothing to send for this arm in this cycle.
+        if not goal_pos:
+            return {}
 
         # Safety: Cap relative target
         if self.config.max_relative_target is not None:

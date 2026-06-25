@@ -1,12 +1,14 @@
 from dataclasses import dataclass, field
 
 from lerobot.robots.robot import RobotConfig
+
 from .seeed_b601_follower import SeeedB601FollowerConfigBase
 
 
-@RobotConfig.register_subclass("seeed_b601_rs_follower")
 @dataclass
-class SeeedB601RSFollowerConfig(RobotConfig, SeeedB601FollowerConfigBase):
+class SeeedB601RSFollowerArmConfig(SeeedB601FollowerConfigBase):
+    """Per-arm configuration for one Seeed B601 RS follower arm."""
+
     # MIT control parameters for RS joints (ID1-ID6), gripper excluded.
     mit_kp: dict[str, float] = field(
         default_factory=lambda: {
@@ -79,3 +81,9 @@ class SeeedB601RSFollowerConfig(RobotConfig, SeeedB601FollowerConfigBase):
     pos_vel_velocity: float | list[float] = field(
         default_factory=lambda: [50, 0.4, 0.4, 50, 50, 50, 0]
     )
+
+
+@RobotConfig.register_subclass("seeed_b601_rs_follower")
+@dataclass
+class SeeedB601RSFollowerConfig(RobotConfig, SeeedB601RSFollowerArmConfig):
+    """Configuration for one Seeed B601 RS follower arm."""
