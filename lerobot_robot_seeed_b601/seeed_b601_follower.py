@@ -321,14 +321,26 @@ class SeeedB601FollowerBase(Robot):
                     f"safe_zero failed: unable to read state for '{joint_name}' after {max_retry} attempts"
                 )
 
-            def _frame_count(starts: dict[str, float]) -> int:
-                max_delta_deg = max((abs(v) for v in starts.values()), default=0.0)
+            def _frame_count(
+                starts: dict[str, float],
+                targets: dict[str, float] | None = None,
+            ) -> int:
+                targets = targets or {}
+                max_delta_deg = max(
+                    (abs(targets.get(j, 0.0) - v) for j, v in starts.items()),
+                    default=0.0,
+                )
                 return max(1, math.ceil(max_delta_deg * 2.0))
 
-            def _interp_to_zero(active_starts: dict[str, float], hold_joints: dict[str, float]) -> bool:
+            def _interp_to_zero(
+                active_starts: dict[str, float],
+                hold_joints: dict[str, float],
+                targets: dict[str, float] | None = None,
+            ) -> bool:
                 if not active_starts:
                     return False
-                frames = _frame_count(active_starts)
+                targets = targets or {}
+                frames = _frame_count(active_starts, targets)
                 emergency_disable_threshold_c = 135.0
                 for frame in range(1, frames + 1):
                     temperatures = self._read_motor_temperatures()
@@ -350,7 +362,8 @@ class SeeedB601FollowerBase(Robot):
                     for joint, start in hold_joints.items():
                         action[f"{joint}.pos"] = start
                     for joint, start in active_starts.items():
-                        action[f"{joint}.pos"] = start * (1.0 - ratio)
+                        target = targets.get(joint, 0.0)
+                        action[f"{joint}.pos"] = start + (target - start) * ratio
                     self.send_action(action)
                     if step_interval_s > 0.0:
                         time.sleep(step_interval_s)
@@ -363,8 +376,35 @@ class SeeedB601FollowerBase(Robot):
             logger.info("safe_zero stage1 start: joints=%s", stage_1)
             if _interp_to_zero(stage_1_start, stage_2_start):
                 return
+
+            # Stage 2: move CAN ID 2/3 back to zero, and bring the gripper back to
+            # 170° if it is currently past 180° (avoids leaving it wide open).
+            # NOTE: gripper action-space sign differs per variant (RS: +, DM: -),
+            # so we compare magnitude and preserve the current sign for the target.
+            stage_2_active = dict(stage_2_start)
+            stage_2_targets: dict[str, float] = {}
+            if FOLLOWER_GRIPPER_MOTOR in self.motors:
+                try:
+                    gripper_pos = _read_action_pos(FOLLOWER_GRIPPER_MOTOR)
+                except RuntimeError as e:
+                    logger.warning("safe_zero: could not read gripper position: %s", e)
+                    gripper_pos = None
+                if gripper_pos is not None and abs(gripper_pos) > 180.0:
+                    gripper_target = math.copysign(170.0, gripper_pos)
+                    logger.info(
+                        "safe_zero gripper: %.2f° (abs > 180°), returning to %.2f°",
+                        gripper_pos,
+                        gripper_target,
+                    )
+                    stage_2_active[FOLLOWER_GRIPPER_MOTOR] = gripper_pos
+                    stage_2_targets[FOLLOWER_GRIPPER_MOTOR] = gripper_target
+
             logger.info("safe_zero stage2 start: joints=%s", stage_2)
-            if _interp_to_zero(stage_2_start, {joint: 0.0 for joint in stage_1}):
+            if _interp_to_zero(
+                stage_2_active,
+                {joint: 0.0 for joint in stage_1},
+                stage_2_targets,
+            ):
                 return
             logger.info("safe_zero done.")
             time.sleep(2.0)
