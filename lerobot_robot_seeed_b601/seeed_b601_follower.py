@@ -58,6 +58,12 @@ class SeeedB601FollowerConfigBase:
     # Use -1 for sign flip, 1 for no flip, and other values when scaling is required.
     joint_directions: dict[str, float] = field(default_factory=dict)
 
+    # Temperature protection thresholds (degrees Celsius, read from each motor's t_mos).
+    # Concrete subclasses may override per motor family.
+    temp_alarm_threshold_c: float = 80.0              # print HIGH TEMP warning above this
+    temp_overheat_threshold_c: float = 100.0           # raise KeyboardInterrupt above this
+    temp_emergency_disable_threshold_c: float = 135.0  # safe_zero emergency disable-torque limit
+
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +88,11 @@ class SeeedB601FollowerBase(Robot):
         self.motor_names = list(config.motor_can_ids.keys())
         self._in_safe_zero = False
         self._emergency_disable_requested = False
+        # When True, disconnect() skips safe_zero(). Set by calibrate() so the
+        # lerobot-calibrate entrypoint (which calls calibrate() then immediately
+        # disconnect()) does not move the arm back to zero. connect() resets this
+        # after its internal calibrate() call so normal use still safe-zeros.
+        self._skip_safe_zero_on_disconnect = False
 
         # Initialize cameras
         self.cameras = make_cameras_from_configs(config.cameras)
@@ -149,6 +160,10 @@ class SeeedB601FollowerBase(Robot):
                 "Mismatch between calibration values in the motor and the calibration file or no calibration file found"
             )
             self.calibrate()
+            # calibrate() set _skip_safe_zero_on_disconnect for the calibrate
+            # script's benefit; clear it here so a later disconnect (after
+            # normal use of this connected arm) still runs safe_zero().
+            self._skip_safe_zero_on_disconnect = False
 
         for cam in self.cameras.values():
             cam.connect()
@@ -164,6 +179,10 @@ class SeeedB601FollowerBase(Robot):
 
     def calibrate(self) -> None:
         """Calibration procedure for B601."""
+        # Mark so that the disconnect() following this (as in the
+        # lerobot-calibrate entrypoint) skips safe_zero(). connect() clears
+        # this flag after its internal calibrate() call.
+        self._skip_safe_zero_on_disconnect = True
         if self.calibration:
             user_input = input(
                 f"Press ENTER to use provided calibration file associated with the id {self.id}, or type 'c' and press ENTER to run calibration: "
@@ -249,6 +268,36 @@ class SeeedB601FollowerBase(Robot):
                 temps[motor_name] = state.t_mos
 
         return temps
+
+    def _check_motor_temperatures(
+        self,
+        alarm_threshold_c: float,
+        overheat_threshold_c: float,
+        context: str = "",
+    ) -> dict[str, float]:
+        """Read motor MOS temperatures once, print a HIGH TEMP warning for any
+        motor above ``alarm_threshold_c``, and raise ``KeyboardInterrupt`` if any
+        motor exceeds ``overheat_threshold_c`` (aborts the control loop).
+
+        Returns the dict of ``{motor_name: t_mos_c}`` that was read.
+        """
+        temperatures = self._read_motor_temperatures()
+        label = f" in {context}" if context else ""
+        for motor_name, temp_c in temperatures.items():
+            if temp_c > alarm_threshold_c:
+                print(
+                    f"[HIGH TEMP] {motor_name} t_mos={temp_c:.2f}C > {alarm_threshold_c:.2f}C"
+                )
+            if temp_c > overheat_threshold_c:
+                logger.error(
+                    "Overheat detected%s: %s t_mos=%.2fC > %.2fC.",
+                    label,
+                    motor_name,
+                    temp_c,
+                    overheat_threshold_c,
+                )
+                raise KeyboardInterrupt("Overheat detected")
+        return temperatures
 
     def mit_output_torque_limit(
         self,
@@ -341,7 +390,7 @@ class SeeedB601FollowerBase(Robot):
                     return False
                 targets = targets or {}
                 frames = _frame_count(active_starts, targets)
-                emergency_disable_threshold_c = 135.0
+                emergency_disable_threshold_c = self.config.temp_emergency_disable_threshold_c
                 for frame in range(1, frames + 1):
                     temperatures = self._read_motor_temperatures()
                     for motor_name, temp_c in temperatures.items():
@@ -463,22 +512,11 @@ class SeeedB601FollowerBase(Robot):
             raise DeviceNotConnectedError(f"{self} is not connected.")
 
         if not self._in_safe_zero:
-            alarm_threshold_c = 80.0
-            overheat_threshold_c = 100.0
-            temperatures = self._read_motor_temperatures()
-            for motor_name, temp_c in temperatures.items():
-                if temp_c > alarm_threshold_c:
-                    print(
-                        f"[HIGH TEMP] {motor_name} t_mos={temp_c:.2f}C > {alarm_threshold_c:.2f}C"
-                    )
-                if temp_c > overheat_threshold_c:
-                    logger.error(
-                        "Overheat detected in send_action: %s t_mos=%.2fC > %.2fC.",
-                        motor_name,
-                        temp_c,
-                        overheat_threshold_c,
-                    )
-                    raise KeyboardInterrupt("Overheat detected")
+            self._check_motor_temperatures(
+                self.config.temp_alarm_threshold_c,
+                self.config.temp_overheat_threshold_c,
+                context="send_action",
+            )
 
         goal_pos = {key.removesuffix(".pos"): val for key, val in action.items() if key.endswith(".pos")}
 
@@ -568,11 +606,20 @@ class SeeedB601FollowerBase(Robot):
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected.")
 
-        if not self._in_safe_zero and not self._emergency_disable_requested:
+        if (
+            not self._in_safe_zero
+            and not self._emergency_disable_requested
+            and not self._skip_safe_zero_on_disconnect
+        ):
             try:
                 self.safe_zero(exit_on_complete=False)
             except Exception:
                 logger.exception("safe_zero during disconnect failed.")
+        elif self._skip_safe_zero_on_disconnect:
+            logger.info(
+                "safe_zero skipped on disconnect: calibrate context "
+                "(_skip_safe_zero_on_disconnect=True)."
+            )
 
         for motor in self.motors.values():
             if self.config.disable_torque_on_disconnect:

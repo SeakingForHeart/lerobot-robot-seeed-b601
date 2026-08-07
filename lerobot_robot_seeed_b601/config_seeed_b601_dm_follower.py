@@ -52,3 +52,8 @@ class SeeedB601DMFollowerConfig(RobotConfig, SeeedB601FollowerConfigBase):
     # Default torque/current ration for gripper's FORCE_POS mode, in range [0,1].
     force_pos_torque_ration: float = 0.1
 
+    # Temperature protection thresholds (Damiao motor family).
+    temp_alarm_threshold_c: float = 90.0
+    temp_overheat_threshold_c: float = 100.0
+    temp_emergency_disable_threshold_c: float = 110.0
+

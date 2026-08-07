@@ -84,3 +84,8 @@ class SeeedB601RSFollowerConfig(RobotConfig, SeeedB601FollowerConfigBase):
     pos_vel_velocity: float | list[float] = field(
         default_factory=lambda: [50, 0.4, 0.4, 50, 50, 50, 0]
     )
+
+    # Temperature protection thresholds (RobStride motor family).
+    temp_alarm_threshold_c: float = 115.0
+    temp_overheat_threshold_c: float = 125.0
+    temp_emergency_disable_threshold_c: float = 135.0
