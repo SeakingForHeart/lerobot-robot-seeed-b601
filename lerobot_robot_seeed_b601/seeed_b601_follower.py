@@ -58,6 +58,12 @@ class SeeedB601FollowerConfigBase:
     # Use -1 for sign flip, 1 for no flip, and other values when scaling is required.
     joint_directions: dict[str, float] = field(default_factory=dict)
 
+    # Gravity-compensation feedforward added to MIT tau for the 6 arm joints.
+    # Disabled by default; enable in the concrete follower config (e.g. RS).
+    gravity_compensation: bool = False
+    # URDF for gravity calc. Set by concrete subclasses (e.g. RS follower).
+    gravity_urdf_path: str | None = None
+
     # Temperature protection thresholds (degrees Celsius, read from each motor's t_mos).
     # Concrete subclasses may override per motor family.
     temp_alarm_threshold_c: float = 80.0              # print HIGH TEMP warning above this
@@ -88,6 +94,8 @@ class SeeedB601FollowerBase(Robot):
         self.motor_names = list(config.motor_can_ids.keys())
         self._in_safe_zero = False
         self._emergency_disable_requested = False
+        # motor_name -> URDF q_idx, built once in connect(); None disables ff.
+        self._gravity_pairing = None
         # When True, disconnect() skips safe_zero(). Set by calibrate() so the
         # lerobot-calibrate entrypoint (which calls calibrate() then immediately
         # disconnect()) does not move the arm back to zero. connect() resets this
@@ -169,6 +177,8 @@ class SeeedB601FollowerBase(Robot):
             cam.connect()
 
         self.configure()
+
+        self._build_gravity_pairing()
 
         logger.info(f"{self} connected.")
 
@@ -306,6 +316,59 @@ class SeeedB601FollowerBase(Robot):
     ) -> float | None:
         """Compute MIT torque command from target position and motor state."""
         return 0.0
+
+    def _build_gravity_pairing(self) -> None:
+        """Build motor_name -> URDF q_idx pairing once at connect().
+
+        Loads and warms the gravity model, then pairs follower arm motors
+        (config order, excluding gripper) with URDF revolute joints (DFS
+        order). On any failure sets self._gravity_pairing = None so
+        _gravity_feedforward no-ops.
+        """
+        if not (self.config.gravity_compensation and self.motor_type == "rs"):
+            self._gravity_pairing = None
+            return
+        urdf = self.config.gravity_urdf_path
+        if not urdf:
+            logger.warning("gravity_urdf_path not set, feedforward disabled")
+            self._gravity_pairing = None
+            return
+        try:
+            from .gravity import load_dynamics_model
+        except Exception as exc:  # pragma: no cover
+            logger.warning("gravity import failed, feedforward disabled: %s", exc)
+            self._gravity_pairing = None
+            return
+        model = load_dynamics_model(urdf_path=urdf)
+        arm_motors = [n for n in self.motor_names if n != FOLLOWER_GRIPPER_MOTOR]
+        arm_qidx = [j.q_idx for j in model.joints if j.jtype in ("revolute", "continuous")]
+        if len(arm_motors) != len(arm_qidx):
+            logger.warning(
+                "gravity feedforward disabled: arm motor count %d != URDF revolute %d",
+                len(arm_motors), len(arm_qidx),
+            )
+            self._gravity_pairing = None
+            return
+        self._gravity_pairing = dict(zip(arm_motors, arm_qidx))
+
+    def _gravity_feedforward(self) -> dict[str, float]:
+        """Per-arm-motor gravity feedforward torque (N·m); {} if disabled."""
+        pairing = self._gravity_pairing
+        if not pairing:
+            return {}
+        import numpy as np
+        from .gravity import load_dynamics_model, compute_generalized_gravity
+        model = load_dynamics_model(urdf_path=self.config.gravity_urdf_path)
+        q = np.zeros(model.nq)
+        for motor_name, qi in pairing.items():
+            motor = self.motors.get(motor_name)
+            if motor is None:
+                continue
+            state = motor.get_state()
+            if state is not None:
+                q[qi] = float(state.pos)
+        tau = compute_generalized_gravity(model=model, q=q)
+        return {name: float(tau[qi]) for name, qi in pairing.items()}
 
     def safe_zero(self, step_interval_s: float = 0.02, exit_on_complete: bool = True) -> None:
         """Move arm joints back to zero in a safer two-stage interpolation.
@@ -553,6 +616,12 @@ class SeeedB601FollowerBase(Robot):
             goal_pos = ensure_safe_goal_position(goal_present_pos, self.config.max_relative_target)
 
         # Prepare and send commands
+        gravity_tau = (
+            self._gravity_feedforward()
+            if (self.config.gravity_compensation and self.motor_type == "rs")
+            else {}
+        )
+
         for motor_name, position_degrees in goal_pos.items():
             try:
                 idx = self.motor_names.index(motor_name)
@@ -587,10 +656,11 @@ class SeeedB601FollowerBase(Robot):
                     if self.motor_type == "rs":
                         kp = getattr(self.config, "mit_kp", {}).get(motor_name, 0.0)
                         kd = getattr(self.config, "mit_kd", {}).get(motor_name, 0.0)
-                        motor.send_mit(pos_rad, 0, kp, kd, 0)
+                        tau = gravity_tau.get(motor_name, 0.0)
+                        motor.send_mit(pos_rad, 0, kp, kd, tau)
                         logger.debug(
                             f"Sent MIT command to {motor_name}: "
-                            f"pos={position_degrees:.2f}°, kp={kp}, kd={kd}"
+                            f"pos={position_degrees:.2f}°, kp={kp}, kd={kd}, tau_ff={tau:.3f}"
                         )
                     else:
                         motor.send_pos_vel(pos_rad, 32)
