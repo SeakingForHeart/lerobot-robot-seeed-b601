@@ -292,6 +292,13 @@ class SeeedB601FollowerBase(Robot):
         Returns the dict of ``{motor_name: t_mos_c}`` that was read.
         """
         temperatures = self._read_motor_temperatures()
+        logger.debug(
+            "motor temps (°C): %s",
+            " | ".join(
+                f"{n}={temperatures[n]:.1f}" if n in temperatures else f"{n}=--"
+                for n in self.motors
+            ),
+        )
         label = f" in {context}" if context else ""
         for motor_name, temp_c in temperatures.items():
             if temp_c > alarm_threshold_c:
@@ -402,7 +409,8 @@ class SeeedB601FollowerBase(Robot):
                 logger.warning("safe_zero skipped: no arm joints mapped to CAN IDs 1-6.")
                 return
 
-            def _read_action_pos(joint_name: str) -> float:
+            def _read_motor_deg(joint_name: str) -> float:
+                """Read a joint's current angle in real motor degrees (no direction scaling)."""
                 motor = self.motors.get(joint_name)
                 if motor is None:
                     raise RuntimeError(f"safe_zero failed: motor '{joint_name}' not found")
@@ -422,9 +430,7 @@ class SeeedB601FollowerBase(Robot):
 
                     state = motor.get_state()
                     if state is not None:
-                        current_deg = math.degrees(state.pos)
-                        direction = self.config.joint_directions.get(joint_name, 1.0) or 1.0
-                        return current_deg / direction
+                        return math.degrees(state.pos)
 
                     if attempt < max_retry:
                         time.sleep(MEDIUM_TIMEOUT_SEC)
@@ -471,19 +477,23 @@ class SeeedB601FollowerBase(Robot):
 
                     ratio = frame / frames
                     action: RobotAction = {}
+                    # Convert motor degrees to action-space here to cancel
+                    # send_action's *joint_directions transform.
                     for joint, start in hold_joints.items():
-                        action[f"{joint}.pos"] = start
+                        d = self.config.joint_directions.get(joint, 1.0) or 1.0
+                        action[f"{joint}.pos"] = start / d
                     for joint, start in active_starts.items():
                         target = targets.get(joint, 0.0)
-                        action[f"{joint}.pos"] = start + (target - start) * ratio
+                        d = self.config.joint_directions.get(joint, 1.0) or 1.0
+                        action[f"{joint}.pos"] = (start + (target - start) * ratio) / d
                     self.send_action(action)
                     if step_interval_s > 0.0:
                         time.sleep(step_interval_s)
 
                 return False
 
-            stage_1_start = {joint: _read_action_pos(joint) for joint in stage_1}
-            stage_2_start = {joint: _read_action_pos(joint) for joint in stage_2}
+            stage_1_start = {joint: _read_motor_deg(joint) for joint in stage_1}
+            stage_2_start = {joint: _read_motor_deg(joint) for joint in stage_2}
 
             logger.info("safe_zero stage1 start: joints=%s", stage_1)
             if _interp_to_zero(stage_1_start, stage_2_start):
@@ -491,25 +501,25 @@ class SeeedB601FollowerBase(Robot):
 
             # Stage 2: move CAN ID 2/3 back to zero, and bring the gripper back to
             # 170° if it is currently past 180° (avoids leaving it wide open).
-            # NOTE: gripper action-space sign differs per variant (RS: +, DM: -),
-            # so we compare magnitude and preserve the current sign for the target.
             stage_2_active = dict(stage_2_start)
             stage_2_targets: dict[str, float] = {}
             if FOLLOWER_GRIPPER_MOTOR in self.motors:
                 try:
-                    gripper_pos = _read_action_pos(FOLLOWER_GRIPPER_MOTOR)
+                    gripper_motor_deg = _read_motor_deg(FOLLOWER_GRIPPER_MOTOR)
                 except RuntimeError as e:
                     logger.warning("safe_zero: could not read gripper position: %s", e)
-                    gripper_pos = None
-                if gripper_pos is not None and abs(gripper_pos) > 180.0:
-                    gripper_target = math.copysign(170.0, gripper_pos)
+                    gripper_motor_deg = None
+
+                if gripper_motor_deg is not None and abs(gripper_motor_deg) > 180.0:
+                    # Wide open: bring it back toward 170°, preserving sign.
+                    target_motor_deg = math.copysign(170.0, gripper_motor_deg)
+                    stage_2_active[FOLLOWER_GRIPPER_MOTOR] = gripper_motor_deg
+                    stage_2_targets[FOLLOWER_GRIPPER_MOTOR] = target_motor_deg
                     logger.info(
-                        "safe_zero gripper: %.2f° (abs > 180°), returning to %.2f°",
-                        gripper_pos,
-                        gripper_target,
+                        "safe_zero gripper: %.2f° (motor, abs>180°), returning to %.2f°",
+                        gripper_motor_deg,
+                        target_motor_deg,
                     )
-                    stage_2_active[FOLLOWER_GRIPPER_MOTOR] = gripper_pos
-                    stage_2_targets[FOLLOWER_GRIPPER_MOTOR] = gripper_target
 
             logger.info("safe_zero stage2 start: joints=%s", stage_2)
             if _interp_to_zero(
