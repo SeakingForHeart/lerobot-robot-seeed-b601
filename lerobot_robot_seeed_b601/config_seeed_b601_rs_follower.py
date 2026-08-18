@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from lerobot.robots.robot import RobotConfig
 from .seeed_b601_follower import SeeedB601FollowerConfigBase
@@ -11,9 +12,9 @@ class SeeedB601RSFollowerConfig(RobotConfig, SeeedB601FollowerConfigBase):
     mit_kp: dict[str, float] = field(
         default_factory=lambda: {
             "shoulder_pan": 50.0,
-            "shoulder_lift": 150.0,
-            "elbow_flex": 150.0,
-            "wrist_flex": 50.0,
+            "shoulder_lift": 50.0,
+            "elbow_flex": 50.0,
+            "wrist_flex": 30.0,
             "wrist_yaw": 50.0,
             "wrist_roll": 50.0,
         }
@@ -22,9 +23,9 @@ class SeeedB601RSFollowerConfig(RobotConfig, SeeedB601FollowerConfigBase):
     mit_kd: dict[str, float] = field(
         default_factory=lambda: {
             "shoulder_pan": 3.0,
-            "shoulder_lift": 10.0,
-            "elbow_flex": 10.0,
-            "wrist_flex": 5.0,
+            "shoulder_lift": 5.0,
+            "elbow_flex": 5.0,
+            "wrist_flex": 3.0,
             "wrist_yaw": 4.0,
             "wrist_roll": 4.0,
         }
@@ -64,6 +65,16 @@ class SeeedB601RSFollowerConfig(RobotConfig, SeeedB601FollowerConfigBase):
             "wrist_roll": 1.0,
             "gripper": 6.0,
         }
+    )
+
+    # Gravity-compensation feedforward for the 6 RS arm joints (MIT tau).
+    gravity_compensation: bool = True
+    # URDF used for gravity-compensation feedforward (bundled 00-arm-rs_asm-v3).
+    gravity_urdf_path: str = str(
+        Path(__file__).resolve().parents[1]
+        / "00-arm-rs_asm-v3"
+        / "urdf"
+        / "00-arm-rs_asm-v3.urdf"
     )
 
     # The Kp parameter for the MIT control mode of the gripper.

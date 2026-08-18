@@ -43,6 +43,9 @@ class SeeedB601DMFollowerConfig(RobotConfig, SeeedB601FollowerConfigBase):
         }
     )
 
+    # DM motors use POS_VEL/FORCE_POS (no MIT tau slot) => no gravity feedforward.
+    gravity_compensation: bool = False
+
 
     # The v_des parameter for the position-velocity control mode of the joints.
     pos_vel_velocity: float | list[float] = field(
