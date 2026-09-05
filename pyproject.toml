@@ -28,6 +28,11 @@ where = ["."]
 include = ["lerobot_robot_seeed_b601*"]
 exclude = ["*.egg-info"]
 
+[tool.setuptools.package-data]
+# Bundled URDF for gravity-compensation feedforward (parsed by gravity.py;
+# meshes/CSV are not needed — only inertial/joint parameters are used).
+lerobot_robot_seeed_b601 = ["assets/*.urdf"]
+
 [tool.setuptools_scm]
 tag_regex = "^v(?P<version>\\d+\\.\\d+\\.\\d+)$"
 fallback_version = "0.0.0"
