@@ -252,7 +252,15 @@ class SeeedB601FollowerBase(Robot):
                         raise e
                     time.sleep(MEDIUM_TIMEOUT_SEC)
             logger.info(f"{motor_name} ensure mode {target_mode}")
-        self.bus.enable_all()
+        try:
+            self.bus.enable_all()
+        except Exception as e:
+            if "not at zero position" in str(e):
+                raise RuntimeError(
+                    "enable_all refused: gripper zero-point error; "
+                    "check that the gripper is homed or recalibrate the arm (lerobot-calibrate)."
+                ) from e
+            raise
 
     def disable_torque(self) -> None:
         """Disable follower motor torque so the arm can be moved by hand during read-only debugging."""
@@ -664,8 +672,12 @@ class SeeedB601FollowerBase(Robot):
                         logger.debug(f"Sent FORCE_POS command to {motor_name}: pos={position_degrees:.2f}°, vel={vel_deg_s:.2f}°/s, ratio={0.1}")
                 else:
                     if self.motor_type == "rs":
-                        kp = getattr(self.config, "mit_kp", {}).get(motor_name, 0.0)
-                        kd = getattr(self.config, "mit_kd", {}).get(motor_name, 0.0)
+                        if self.config.gravity_compensation:
+                            kp = getattr(self.config, "gravity_mit_kp", {}).get(motor_name, 0.0)
+                            kd = getattr(self.config, "gravity_mit_kd", {}).get(motor_name, 0.0)
+                        else:
+                            kp = getattr(self.config, "mit_kp", {}).get(motor_name, 0.0)
+                            kd = getattr(self.config, "mit_kd", {}).get(motor_name, 0.0)
                         tau = gravity_tau.get(motor_name, 0.0)
                         motor.send_mit(pos_rad, 0, kp, kd, tau)
                         logger.debug(

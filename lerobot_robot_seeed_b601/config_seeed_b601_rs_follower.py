@@ -9,7 +9,32 @@ from .seeed_b601_follower import SeeedB601FollowerConfigBase
 @dataclass
 class SeeedB601RSFollowerConfig(RobotConfig, SeeedB601FollowerConfigBase):
     # MIT control parameters for RS joints (ID1-ID6), gripper excluded.
+    # Used when gravity_compensation=False.
     mit_kp: dict[str, float] = field(
+        default_factory=lambda: {
+            "shoulder_pan": 50.0,
+            "shoulder_lift": 150.0,
+            "elbow_flex": 150.0,
+            "wrist_flex": 50.0,
+            "wrist_yaw": 50.0,
+            "wrist_roll": 50.0,
+        }
+    )
+
+    mit_kd: dict[str, float] = field(
+        default_factory=lambda: {
+            "shoulder_pan": 3.0,
+            "shoulder_lift": 10.0,
+            "elbow_flex": 10.0,
+            "wrist_flex": 5.0,
+            "wrist_yaw": 4.0,
+            "wrist_roll": 4.0,
+        }
+    )
+
+    # MIT control parameters tuned for gravity-compensation feedforward.
+    # Used when gravity_compensation=True.
+    gravity_mit_kp: dict[str, float] = field(
         default_factory=lambda: {
             "shoulder_pan": 50.0,
             "shoulder_lift": 50.0,
@@ -20,7 +45,7 @@ class SeeedB601RSFollowerConfig(RobotConfig, SeeedB601FollowerConfigBase):
         }
     )
 
-    mit_kd: dict[str, float] = field(
+    gravity_mit_kd: dict[str, float] = field(
         default_factory=lambda: {
             "shoulder_pan": 3.0,
             "shoulder_lift": 5.0,
@@ -68,12 +93,11 @@ class SeeedB601RSFollowerConfig(RobotConfig, SeeedB601FollowerConfigBase):
     )
 
     # Gravity-compensation feedforward for the 6 RS arm joints (MIT tau).
-    gravity_compensation: bool = True
-    # URDF used for gravity-compensation feedforward (bundled 00-arm-rs_asm-v3).
+    gravity_compensation: bool = False
+    # URDF used for gravity-compensation feedforward (bundled in-package under assets/).
     gravity_urdf_path: str = str(
-        Path(__file__).resolve().parents[1]
-        / "00-arm-rs_asm-v3"
-        / "urdf"
+        Path(__file__).resolve().parent
+        / "assets"
         / "00-arm-rs_asm-v3.urdf"
     )
 
