@@ -97,10 +97,28 @@ class SeeedB601RSFollower(SeeedB601FollowerBase):
             state.vel,
         )
 
-        # Use dedicated grasp/hold torque limit when estimated motor speed is small.
+        # Shared stall flag: motor barely moving. Used by both the open-
+        # direction stall protection below and the grasp/hold torque switch.
+        stalled = abs(estimated_state_vel) < 0.25
+
+        # Open-direction stall protection: if the gripper is commanded to open
+        # (RS open direction is positive) with a real position error but the
+        # motor is stalled for several cycles (blocked or at the open stop),
+        # cut torque to protect the mechanism instead of pushing the stop.
+        if (pos_target - state.pos) > 0.05 and stalled:
+            self._gripper_open_stall_count = getattr(self, "_gripper_open_stall_count", 0) + 1
+        else:
+            self._gripper_open_stall_count = 0
+
+        if self._gripper_open_stall_count >= 5:
+            logger.warning("gripper open-stall detected, cutting torque")
+            motor.request_feedback()
+            return 0.0
+
+        # Grasp/hold: closing-direction stall (object grasped) -> lower hold torque.
         max_torque = (
             self.config.gripper_mit_torque_limit
-            if abs(estimated_state_vel) > 0.25
+            if not stalled
             else self.config.gripper_mit_hold_torque_limit
         )
         motor.request_feedback()

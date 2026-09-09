@@ -252,15 +252,8 @@ class SeeedB601FollowerBase(Robot):
                         raise e
                     time.sleep(MEDIUM_TIMEOUT_SEC)
             logger.info(f"{motor_name} ensure mode {target_mode}")
-        try:
-            self.bus.enable_all()
-        except Exception as e:
-            if "not at zero position" in str(e):
-                raise RuntimeError(
-                    "enable_all refused: gripper zero-point error; "
-                    "check that the gripper is homed or recalibrate the arm (lerobot-calibrate)."
-                ) from e
-            raise
+        self.bus.enable_all()
+        self.detect_gripper_zero()
 
     def disable_torque(self) -> None:
         """Disable follower motor torque so the arm can be moved by hand during read-only debugging."""
@@ -269,6 +262,58 @@ class SeeedB601FollowerBase(Robot):
 
         self.bus.disable_all()
         logger.info(f"{self} torque disabled.")
+
+    def detect_gripper_zero(
+        self,
+        tolerance_deg: float = 5.0,
+        force_ratio: float = 0.05,
+        mit_tau: float = 0.3,
+    ) -> dict:
+        if not self.is_connected:
+            raise DeviceNotConnectedError(f"{self} is not connected.")
+        motor = self.motors.get(FOLLOWER_GRIPPER_MOTOR)
+        if motor is None:
+            return {"error": "gripper motor not found"}
+        lo, hi = self.config.joint_limits[FOLLOWER_GRIPPER_MOTOR]
+        closing_sign = -math.copysign(1.0, hi if abs(hi) > abs(lo) else lo)
+
+        prev, stable = None, 0
+        for _ in range(200):
+            if self.motor_type == "rs":
+                motor.send_mit(0.0, 0.0, 0.0, 1.5, closing_sign * mit_tau)
+            else:
+                motor.send_force_pos(
+                    math.radians(closing_sign * 10.0),
+                    math.radians(10.0),
+                    force_ratio,
+                )
+            time.sleep(0.05)
+            motor.request_feedback()
+            try:
+                self.bus.poll_feedback_once()
+            except Exception:
+                pass
+            state = motor.get_state()
+            if state is None:
+                continue
+            cur = math.degrees(state.pos)
+            stable = stable + 1 if prev is not None and abs(cur - prev) < 0.1 else 0
+            prev = cur
+            if stable >= 5:
+                break
+
+        if self.motor_type == "rs":
+            motor.send_mit(0.0, 0.0, 0.0, 1.5, 0.0)
+        else:
+            motor.send_force_pos(0.0, math.radians(10.0), force_ratio)
+        if prev is not None and abs(prev) <= tolerance_deg:
+            logger.info("gripper zero-detect: zero-point check passed")
+        else:
+            offset = prev if prev is not None else float("nan")
+            raise RuntimeError(
+                "gripper zero-detect: gripper not homed, offset "
+                f"{offset:.2f} deg, please confirm gripper is at home or recalibrate"
+            )
 
     def _read_motor_temperatures(self) -> dict[str, float]:
         """Read per-motor MOS temperatures once and return available values."""
